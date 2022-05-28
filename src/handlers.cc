@@ -17,12 +17,23 @@ std::string Handler::getName() {
     return this->name;
 }
 
-int FileHandler::handle(Request request) {
-    std::cout << "FileHandler Handle" << std::endl;
+int ReadFileHandler::handle(URingEvent *event) {
+    int size = (int)event->fileInfo->fileSize;
+    int block = size / FILE_BLOCK_MAX_SIZE;
+    if (size % FILE_BLOCK_MAX_SIZE > 0)
+        block++;
+    for (int i = 0; i < block; i++) {
+        char *buf = (char *)event->fileInfo->iovecs[i].iov_base;
+        int len = (int)event->fileInfo->iovecs[i].iov_len;
+        while (len--) {
+            cout << *buf;
+            buf++;
+        }
+    }
     return 0;
 }
 
-int SocketHandler::handle(Request request) {
+int SocketHandler::handle(URingEvent *event) {
     std::cout << "SocketHandler Handle" << std::endl;
     return 0;
 }
