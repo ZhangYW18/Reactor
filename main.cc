@@ -1,9 +1,12 @@
+#include <arpa/inet.h>
 #include <fcntl.h>
 #include <iostream>
+#include <netinet/in.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <string.h>
 #include <string>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/uio.h>
@@ -21,6 +24,14 @@ using namespace std;
 class Reactor {
 public:
     Reactor() {
+        /* Initialize socket */
+        int ret = initSocket();
+        if (ret != -1) {
+            this->sock = ret;
+        } else {
+            fprintf(stderr, "init socket error");
+        }
+        memset(buf, 0, sizeof(buf));
         /* Initialize io_uring */
         io_uring_queue_init(QUEUE_DEPTH, &ring, 0);
     }
@@ -34,6 +45,10 @@ public:
         return &(this->ring);
     }
 
+    int getSocket() {
+        return this->sock;
+    }
+
     void registerHandler(Handlers::Handler *handler) {
         this->handlers[handler->getName()] = handler;
     }
@@ -41,45 +56,113 @@ public:
     void run() {
         // struct io_uring_cqe *cqe;
         cout << "Reactor is running..." << endl;
+        // URingEvent *e = NULL;
 
         while (true) {
             io_uring_cqe *cqe;
             int ret = io_uring_wait_cqe(&ring, &cqe);
             if (ret < 0) {
                 perror("io_uring_wait_cqe error");
-                cout << ret << endl;
                 continue;
             }
             if (cqe->res < 0) {
                 perror("io_uring_wait_cqe cqe res error");
                 continue;
             }
+            cout << "ret: " << ret << endl;
+            cout << "res: " << cqe->res << endl;
             URingEvent *event;
             event = (URingEvent *)io_uring_cqe_get_data(cqe);
+            printf("address_cqe: %p\n", event->eventInfo.sockInfo);
+            printf("type2: %d\n", event->eventType);
+            /*
+            if (e != NULL) {
+                event = e;
+                e = NULL;
+            }*/
             switch (event->eventType) {
             case READ_FILE_EVENT:
-                // cout << "File Size cqe: " << event->fileInfo->fileSize << endl;
-                handlers[FILE_HANDLER_NAME]->handle(event);
+                handlers[FILE_HANDLER_NAME]->handle(event, &ring, sock);
                 break;
-            case SOCKET_EVENT:
-                handlers[SOCKET_HANDLER_NAME]->handle(event);
+                /*
+            case SOCKET_CONNECT_EVENT:
+                cout << "echoMsg: " << event->eventInfo.sockInfo->echoMessage << endl;
+                handlers[SOCKET_CONNECT_HANDLER_NAME]->handle(event, &ring, sock);
+                break;
+                */
+            case SOCKET_READ_EVENT:
+                handlers[SOCKET_READ_HANDLER_NAME]->handle(event, &ring, sock);
+                break;
+            case SOCKET_WRITE_EVENT:
+                event->eventInfo.sockInfo->msgBuf = this->buf;
+                handlers[SOCKET_WRITE_HANDLER_NAME]->handle(event, &ring, sock);
+                // e = handlers[SOCKET_WRITE_HANDLER_NAME]->handle(event, &ring, sock);
+                // printf("address_after_write: %p\n", e->eventInfo.sockInfo);
+                break;
+            case SOCKET_CLOSE_EVENT:
                 break;
             default:
-                fprintf(stderr, "Error: Unknown CQE event.\n");
+                handlers[SOCKET_READ_HANDLER_NAME]->handle(event, &ring, sock);
+                fprintf(stderr, "Error: Unknown CQE event. EventType: %d\n", event->eventType);
                 break;
             }
             io_uring_cqe_seen(&ring, cqe);
+            // TODO free memory
+            // free(event);
         }
     }
 
 private:
-    std::unordered_map<std::string, Handlers::Handler *> handlers;
+    unordered_map<string, Handlers::Handler *> handlers;
     struct io_uring ring;
+    int sock;
+    char buf[1024];
+
+    int initSocket() {
+        // Create a new socket.
+        int sock = socket(AF_INET, SOCK_STREAM, 0);
+        if (sock == -1) {
+            fprintf(stderr, "socket error");
+            return -1;
+        }
+
+        // Allow socket to reuse local address.
+        int enable = 1;
+        if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int))
+            < 0) {
+            fprintf(stderr, "setsockopt error");
+            return -1;
+        }
+        // Assume echo server runs on 127.0.0.1:8000 and connect to it
+        struct sockaddr_in serv_addr;
+        serv_addr.sin_family = AF_INET;
+        serv_addr.sin_port = htons(SERVER_PORT);
+        if (inet_pton(AF_INET, "127.0.0.1", &serv_addr.sin_addr)
+            <= 0) {
+            fprintf(stderr, "Invalid address/ Address not supported \n");
+            return -1;
+        }
+        if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr))
+            < 0) {
+            fprintf(stderr, "Connection Failed \n");
+            return -1;
+        }
+
+        cout << "init socket success: " << sock << endl;
+        return sock;
+    }
 };
 
-void *listenAndSubmitEvent(void *ringarg) {
-    struct io_uring *ring = (struct io_uring *)ringarg;
+struct thread_data {
+    io_uring *ring;
+    int sock;
+};
 
+void *listenAndSubmitEvent(void *args) {
+    thread_data *data = (thread_data *)args;
+    io_uring *ring = data->ring;
+    int sock = data->sock;
+    // bool connected = false;
     while (true) {
         string input;
         getline(cin, input);
@@ -89,12 +172,12 @@ void *listenAndSubmitEvent(void *ringarg) {
             continue;
         }
         string command = input.substr(0, space);
+
         if (command == "cat") {
             // Get file path
             string tmp = input.substr(space + 1, input.length());
             char filePath[tmp.length() + 1];
             strcpy(filePath, tmp.c_str());
-            // cout << "file: " << tmp << endl;
             // Open file
             int fd = open(filePath, O_RDONLY);
             if (fd < 0) {
@@ -103,7 +186,8 @@ void *listenAndSubmitEvent(void *ringarg) {
             }
             // Get file size and divide file into blocks
             struct stat fs;
-            if (fstat(fd, &fs) < 0) {
+            if (fstat(fd, &fs)
+                < 0) {
                 perror("fstat");
                 continue;
             }
@@ -131,14 +215,38 @@ void *listenAndSubmitEvent(void *ringarg) {
             // Submit event to SQE.
             URingEvent event;
             event.eventType = READ_FILE_EVENT;
-            event.fileInfo = finfo;
+            event.eventInfo.fileInfo = finfo;
+
             io_uring_sqe *sqe = io_uring_get_sqe(ring);
             io_uring_prep_readv(sqe, fd, finfo->iovecs, blocks, 0);
             io_uring_sqe_set_data(sqe, &event);
             io_uring_submit(ring);
-            // cout << "Submit read file event to SQE success!" << endl;
             continue;
         }
+
+        // Command echo xxx: send message "xxx" to echo server via socket and then read response from echo server.
+        // connect -> write -> recv
+        if (command == "echo") {
+            // Get message and send it to echo server later
+            string message = input.substr(space + 1, input.length());
+            char *cstr = (char *)malloc(message.length() + 1);
+            strcpy(cstr, message.c_str());
+            // SockInfo *sinfo = new SockInfo();
+
+            // Submit event to SQE.
+            URingEvent event;
+            event.eventType = SOCKET_WRITE_EVENT;
+            event.eventInfo.sockInfo = new SockInfo();
+            event.eventInfo.sockInfo->msgSize = strlen(cstr);
+
+            struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
+            io_uring_prep_send(sqe, sock, cstr, strlen(cstr), 0);
+            io_uring_sqe_set_data(sqe, &event);
+            io_uring_submit(ring);
+            continue;
+        }
+
+        cout << "unknown command!" << endl;
     }
     return 0;
 }
@@ -147,10 +255,14 @@ int main(int argc, const char *argv[]) {
     Reactor reactor;
 
     reactor.registerHandler(new Handlers::ReadFileHandler(FILE_HANDLER_NAME));
-    reactor.registerHandler(new Handlers::SocketHandler(SOCKET_HANDLER_NAME));
+    reactor.registerHandler(new Handlers::SocketReadHandler(SOCKET_READ_HANDLER_NAME));
+    reactor.registerHandler(new Handlers::SocketWriteHandler(SOCKET_WRITE_HANDLER_NAME));
 
     pthread_t listeningThread;
-    pthread_create(&listeningThread, NULL, listenAndSubmitEvent, (void *)reactor.getIOring());
+    thread_data data;
+    data.ring = reactor.getIOring();
+    data.sock = reactor.getSocket();
+    pthread_create(&listeningThread, NULL, listenAndSubmitEvent, &data);
 
     reactor.run();
 
