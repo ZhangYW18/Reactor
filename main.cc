@@ -54,9 +54,7 @@ public:
     }
 
     void run() {
-        // struct io_uring_cqe *cqe;
         cout << "Reactor is running..." << endl;
-        // URingEvent *e = NULL;
 
         while (true) {
             io_uring_cqe *cqe;
@@ -69,46 +67,34 @@ public:
                 perror("io_uring_wait_cqe cqe res error");
                 continue;
             }
-            cout << "ret: " << ret << endl;
-            cout << "res: " << cqe->res << endl;
+            // cout << "ret: " << ret << endl;
+            // cout << "res: " << cqe->res << endl;
             URingEvent *event;
             event = (URingEvent *)io_uring_cqe_get_data(cqe);
-            printf("address_cqe: %p\n", event->eventInfo.sockInfo);
-            printf("type2: %d\n", event->eventType);
-            /*
-            if (e != NULL) {
-                event = e;
-                e = NULL;
-            }*/
+            // printf("address_cqe: %p\n", event->eventInfo.sockInfo);
+            // printf("type2: %d\n", event->eventType);
             switch (event->eventType) {
             case READ_FILE_EVENT:
-                handlers[FILE_HANDLER_NAME]->handle(event, &ring, sock);
+                ret = handlers[FILE_HANDLER_NAME]->handle(event, &ring, sock);
                 break;
-                /*
-            case SOCKET_CONNECT_EVENT:
-                cout << "echoMsg: " << event->eventInfo.sockInfo->echoMessage << endl;
-                handlers[SOCKET_CONNECT_HANDLER_NAME]->handle(event, &ring, sock);
-                break;
-                */
             case SOCKET_READ_EVENT:
-                handlers[SOCKET_READ_HANDLER_NAME]->handle(event, &ring, sock);
+                ret = handlers[SOCKET_READ_HANDLER_NAME]->handle(event, &ring, sock);
                 break;
             case SOCKET_WRITE_EVENT:
                 event->eventInfo.sockInfo->msgBuf = this->buf;
-                handlers[SOCKET_WRITE_HANDLER_NAME]->handle(event, &ring, sock);
-                // e = handlers[SOCKET_WRITE_HANDLER_NAME]->handle(event, &ring, sock);
-                // printf("address_after_write: %p\n", e->eventInfo.sockInfo);
+                ret = handlers[SOCKET_WRITE_HANDLER_NAME]->handle(event, &ring, sock);
                 break;
-            case SOCKET_CLOSE_EVENT:
-                break;
+            case EXIT_EVENT:
+                io_uring_cqe_seen(&ring, cqe);
+                return;
             default:
-                handlers[SOCKET_READ_HANDLER_NAME]->handle(event, &ring, sock);
                 fprintf(stderr, "Error: Unknown CQE event. EventType: %d\n", event->eventType);
                 break;
             }
+            if (ret < 0) {
+                fprintf(stderr, "Handler handle error, code: %d", ret);
+            }
             io_uring_cqe_seen(&ring, cqe);
-            // TODO free memory
-            // free(event);
         }
     }
 
@@ -133,6 +119,7 @@ private:
             fprintf(stderr, "setsockopt error");
             return -1;
         }
+
         // Assume echo server runs on 127.0.0.1:8000 and connect to it
         struct sockaddr_in serv_addr;
         serv_addr.sin_family = AF_INET;
@@ -148,7 +135,7 @@ private:
             return -1;
         }
 
-        cout << "init socket success: " << sock << endl;
+        // cout << "init socket success: " << sock << endl;
         return sock;
     }
 };
@@ -167,11 +154,11 @@ void *listenAndSubmitEvent(void *args) {
         string input;
         getline(cin, input);
         int space = input.find(" ");
-        if (space < 0) {
-            fprintf(stderr, "Input is invalid.\n");
-            continue;
-        }
-        string command = input.substr(0, space);
+        string command;
+        if (space < 0)
+            command = input;
+        else
+            command = input.substr(0, space);
 
         if (command == "cat") {
             // Get file path
@@ -225,7 +212,6 @@ void *listenAndSubmitEvent(void *args) {
         }
 
         // Command echo xxx: send message "xxx" to echo server via socket and then read response from echo server.
-        // connect -> write -> recv
         if (command == "echo") {
             // Get message and send it to echo server later
             string message = input.substr(space + 1, input.length());
@@ -246,7 +232,18 @@ void *listenAndSubmitEvent(void *args) {
             continue;
         }
 
-        cout << "unknown command!" << endl;
+        if (command == "exit") {
+            URingEvent event;
+            event.eventType = EXIT_EVENT;
+            event.eventInfo.sockInfo = new SockInfo();
+            struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
+            io_uring_prep_close(sqe, sock);
+            io_uring_sqe_set_data(sqe, &event);
+            io_uring_submit(ring);
+            continue;
+        }
+
+        cout << "Error: unknown command!" << endl;
     }
     return 0;
 }

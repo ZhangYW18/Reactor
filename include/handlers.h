@@ -1,24 +1,13 @@
 #ifndef REACTOR_HANDLERS_HANDLERS_H_
 #define REACTOR_HANDLERS_HANDLERS_H_
 
-#ifndef STRING
-#define STRING
+#include <stdio.h>
 #include <string.h>
 #include <string>
-#endif
 
-#ifndef LIBURING
-#define LIBURING
-#include <liburing.h>
-#endif
-
-#ifndef STDIO
-#define STDIO
-#include <stdio.h>
-#endif
+#include "liburing.h"
 
 #define FILE_HANDLER_NAME "file"
-#define SOCKET_CONNECT_HANDLER_NAME "socket_connect"
 #define SOCKET_READ_HANDLER_NAME "socket_read"
 #define SOCKET_WRITE_HANDLER_NAME "socket_write"
 #define FILE_BLOCK_MAX_SIZE 1024
@@ -27,11 +16,9 @@
 using namespace std;
 
 enum EventType { READ_FILE_EVENT,
-    SOCKET_ACCEPT_EVENT,
-    SOCKET_CONNECT_EVENT,
     SOCKET_READ_EVENT,
     SOCKET_WRITE_EVENT,
-    SOCKET_CLOSE_EVENT };
+    EXIT_EVENT };
 
 struct FileInfo {
     off_t fileSize;
@@ -63,10 +50,10 @@ public:
 
     Handler(string name);
 
-    virtual ~Handler() {
+    ~Handler() {
     }
 
-    virtual URingEvent *handle(URingEvent *event, io_uring *ring, int sock) = 0;
+    virtual int handle(URingEvent *event, io_uring *ring, int sock) = 0;
 
     string getName();
 
@@ -78,19 +65,19 @@ class ReadFileHandler : public Handler {
     // Inherit all constructors of Handler class
     using Handler::Handler;
 
-    URingEvent *handle(URingEvent *event, io_uring *ring, int sock);
+    int handle(URingEvent *event, io_uring *ring, int sock);
 };
 
 class SocketReadHandler : public Handler {
     using Handler::Handler;
 
-    URingEvent *handle(URingEvent *event, io_uring *ring, int sock);
+    int handle(URingEvent *event, io_uring *ring, int sock);
 };
 
 class SocketWriteHandler : public Handler {
     using Handler::Handler;
 
-    URingEvent *handle(URingEvent *event, io_uring *ring, int sock);
+    int handle(URingEvent *event, io_uring *ring, int sock);
 };
 } // namespace Handlers
 #endif
