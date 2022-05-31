@@ -1,9 +1,13 @@
 # Reactor
 
 A simple reactor using io_uring.
+
 Completed `cat` command, `echo` command & `exit` command.
+
 For `cat filepath` command, it reads from a file and outputs it.
-For `echo string` command, it sends the message to an echo server and then receives the result from it
+
+For `echo string` command, it sends the message to an echo server and then receives the result from it.
+
 For `exit` command, the program exits.
 
 ## 1. Install [liburing](https://github.com/axboe/liburing) on Linux Systems
